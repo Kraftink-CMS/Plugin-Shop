@@ -21,7 +21,7 @@
     "games": {
         "supported": ["*"]
     },
-    "version": "1.0.1-dev",
+    "version": "1.0.1",
     "namespace": "KraftInk\\Plugins\\Shop\\",
     "provider": "KraftInk\\Plugins\\Shop\\Providers\\PluginServiceProvider",
     "permissions": {

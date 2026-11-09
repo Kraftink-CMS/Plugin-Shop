@@ -2,5 +2,5 @@
 
 return [
     'name' => 'Shop',
-    'description' => 'A shop for your community’s digital products, with a cart, payments and in-game deliveries.',
+    'description' => 'Sell ranks, downloads and gift cards from your site.',
 ];

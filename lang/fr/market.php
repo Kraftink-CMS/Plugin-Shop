@@ -2,5 +2,5 @@
 
 return [
     'name' => 'Boutique',
-    'description' => 'Une boutique pour les produits numériques de votre communauté, avec panier, paiements et livraisons en jeu.',
+    'description' => 'Vendez des grades, des fichiers et des cartes-cadeaux sur votre site.',
 ];

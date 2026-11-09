@@ -1,0 +1,8 @@
+{
+    "name": "kraftink/shop",
+    "type": "kraftink-plugin",
+    "require": {
+        "php": "^8.4.1",
+        "stripe/stripe-php": "^22.1"
+    }
+}

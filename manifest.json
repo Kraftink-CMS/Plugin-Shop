@@ -1,0 +1,134 @@
+{
+    "id": "shop",
+    "name": "Shop",
+    "authors": ["nivcoo","KraftInk"],
+    "license": "MIT",
+    "description": "shop::messages.package_description",
+    "market": {
+        "name": "shop::market.name",
+        "author": {
+            "name": "nivcoo, KraftInk",
+            "url": "https://github.com/kraftink-cms"
+        },
+        "description": "shop::market.description"
+    },
+    "type": "plugin",
+    "games": {
+        "supported": ["*"]
+    },
+    "version": "1.0.0",
+    "namespace": "KraftInk\\Plugins\\Shop\\",
+    "provider": "KraftInk\\Plugins\\Shop\\Providers\\PluginServiceProvider",
+    "permissions": {
+        "shop.view": {
+            "label": "shop::messages.permission_view",
+            "default": {
+                "visitor": true,
+                "member": true
+            }
+        },
+        "shop.manage": {
+            "label": "shop::messages.admin_title",
+            "default": {
+                "admin": true
+            }
+        },
+        "shop.refunds.manage": {
+            "label": "shop::commerce.refunds.permission",
+            "default": {
+                "admin": true
+            }
+        },
+        "shop.finance.configure": {
+            "label": "shop::commerce.documents.permission",
+            "default": {
+                "admin": true
+            }
+        },
+        "shop.payments.record": {
+            "label": "shop::commerce.payments.manual.permission",
+            "default": {
+                "admin": true
+            }
+        }
+    },
+    "navigation": {
+        "public": [
+            {
+                "label": "shop::messages.title",
+                "permission": "shop.view",
+                "route": "plugins.shop.public.catalog.index"
+            }
+        ],
+        "admin": [
+            {
+                "parent": "extensions",
+                "position": 100,
+                "label": "shop::messages.title",
+                "id": "shop",
+                "icon": "bag-check",
+                "children": [
+                    {
+                        "label": "shop::admin.storefront.settings",
+                        "permission": "shop.manage",
+                        "icon": "shop-window",
+                        "route": "plugins.shop.admin.storefront.index"
+                    },
+                    {
+                        "label": "shop::admin.catalog.title",
+                        "permission": "shop.manage",
+                        "icon": "grid",
+                        "route": "plugins.shop.admin.catalog.index"
+                    },
+                    {
+                        "label": "shop::admin.discounts.privileged.title",
+                        "route": "plugins.shop.admin.privileged.index",
+                        "icon": "tags",
+                        "permission": "shop.manage"
+                    },
+                    {
+                        "label": "shop::commerce.upgrades.title",
+                        "route": "plugins.shop.admin.pricing.index",
+                        "icon": "arrow-up-circle",
+                        "permission": "shop.manage"
+                    },
+                    {
+                        "label": "shop::commerce.documents.settings",
+                        "permission": "shop.finance.configure",
+                        "icon": "receipt",
+                        "route": "plugins.shop.admin.commerce.index"
+                    },
+                    {
+                        "label": "shop::admin.reports.title",
+                        "permission": "shop.manage",
+                        "icon": "bar-chart-line",
+                        "route": "plugins.shop.admin.reports.index"
+                    }
+                ],
+                "permission": "shop.manage"
+            }
+        ],
+        "footer": []
+    },
+    "imports": {
+        "azuriom": ["shop_"],
+        "mineweb": ["shop_"],
+        "kraftink": ["shop__"]
+    },
+    "requires": {
+        "php": "^8.4.1",
+        "cms": ">=0.0.1"
+    },
+    "configuration": {
+        "route": "plugins.shop.admin.catalog.index",
+        "permission": "shop.manage"
+    },
+    "uninstall": {
+        "settings": ["shop.", "secret.shop."],
+        "storage": ["shop/downloads"]
+    },
+    "assets": {
+        "scripts": ["admin.js", "billing.js", "payments.js"]
+    },
+    "privacy": "KraftInk\\Plugins\\Shop\\Services\\Privacy"
+}

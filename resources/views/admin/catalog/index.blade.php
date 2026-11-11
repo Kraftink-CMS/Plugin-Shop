@@ -391,96 +391,60 @@
                 @elseif ($section === 'payments')
                     @if (auth()->user()->hasPermission('shop.finance.configure'))
                         <section class="card">
-                            <form data-ajax="true" data-redirect-url="response" method="post" action="{{ route('plugins.shop.admin.payments.settings.update') }}">
-                                @csrf
-                                <input type="hidden" name="catalogue_tab" value="payments">
                                 <div class="card-body">
                                     <p>{{ __('shop::commerce.payments.settings.payments_help') }}</p>
                                     <div class="accordion" id="shop-gateways">
                                         @foreach ($gateways as $gateway)
                                             @php
                                                 $gatewayPolicy = $paymentPolicies[$gateway->id()] ?? [];
+                                                $fields = $gateway->configurationFields();
+                                                $webhookField = $webhookFields[$gateway->id()] ?? null;
+                                                $gatewayConfigured = $gateway->configured();
+                                                $activationId = 'gateway-enabled-' . $gateway->id();
                                                 $gatewayErrors = collect($errors->keys())->contains(
                                                     fn($key) => str_starts_with($key, 'gateways.' . $gateway->id() . '.'),
                                                 );
+                                                $gatewayOpen = $gatewayErrors || session('shop_payment_gateway') === $gateway->id();
                                             @endphp
                                             <div class="accordion-item">
                                                 <h2 class="accordion-header">
                                                     <button @class([
                                                         'accordion-button d-flex gap-2',
-                                                        'collapsed' => !$gatewayErrors,
+                                                        'collapsed' => !$gatewayOpen,
                                                     ]) type="button" data-bs-toggle="collapse"
                                                         data-bs-target="#gateway-{{ $gateway->id() }}"
-                                                        aria-expanded="{{ $gatewayErrors ? 'true' : 'false' }}"
+                                                        aria-expanded="{{ $gatewayOpen ? 'true' : 'false' }}"
                                                         aria-controls="gateway-{{ $gateway->id() }}">{{ $gateway->name() }} <span
-                                                            class="badge text-bg-secondary">{{ $gateway->configured() ? __('shop::messages.states.configured') : __('shop::messages.states.not_configured') }}</span></button>
+                                                            class="badge text-bg-secondary">{{ $gatewayConfigured ? __('shop::messages.states.configured') : __('shop::messages.states.not_configured') }}</span></button>
                                                 </h2>
-                                                <div @class(['accordion-collapse collapse', 'show' => $gatewayErrors]) id="gateway-{{ $gateway->id() }}"
+                                                <div @class(['accordion-collapse collapse', 'show' => $gatewayOpen]) id="gateway-{{ $gateway->id() }}"
                                                     data-bs-parent="#shop-gateways">
                                                     <div class="accordion-body">
-                                                        <input type="hidden" name="gateways[{{ $gateway->id() }}][enabled]" value="0">
-                                                        <div class="form-check mb-3">
-                                                            <input class="form-check-input" id="gateway-enabled-{{ $gateway->id() }}"
-                                                                type="checkbox" name="gateways[{{ $gateway->id() }}][enabled]"
-                                                                value="1" @checked($registry->enabled($gateway->id()))>
+                                                        <input type="hidden" name="gateways[{{ $gateway->id() }}][enabled]" value="0" form="shop-payment-settings">
+                                                        <div class="form-check form-switch mb-3">
+                                                            <input class="form-check-input" id="{{ $activationId }}"
+                                                                type="checkbox" role="switch" name="gateways[{{ $gateway->id() }}][enabled]"
+                                                                @if (!$gatewayConfigured) aria-describedby="{{ $activationId }}-help" @endif
+                                                                value="1" form="shop-payment-settings" @checked($registry->enabled($gateway->id()))>
                                                             <label class="form-check-label"
-                                                                for="gateway-enabled-{{ $gateway->id() }}">{{ __('shop::messages.states.enabled') }}</label>
+                                                                for="{{ $activationId }}">{{ __('shop::commerce.payments.settings.offer_gateway') }}</label>
+                                                            @unless ($gatewayConfigured)
+                                                                <div class="form-text" id="{{ $activationId }}-help">{{ __('shop::commerce.payments.settings.gateway_requires_configuration') }}</div>
+                                                            @endunless
                                                         </div>
-                                                        @foreach ($gateway->configurationFields() as $key => $field)
-                                                            @if (($field['type'] ?? 'secret') === 'boolean')
-                                                                <input type="hidden"
-                                                                    name="gateways[{{ $gateway->id() }}][{{ $key }}]"
-                                                                    value="0">
-                                                                <div class="form-check mb-3">
-                                                                    <input class="form-check-input"
-                                                                        id="gateway-{{ $gateway->id() }}-{{ $key }}"
-                                                                        type="checkbox"
-                                                                        name="gateways[{{ $gateway->id() }}][{{ $key }}]"
-                                                                        value="1" @checked($registry->setting($gateway->id(), $key, $field['default'] ?? '0') === '1')>
-                                                                    <label class="form-check-label"
-                                                                        for="gateway-{{ $gateway->id() }}-{{ $key }}">{{ __($field['label']) }}</label>
-                                                                </div>
-                                                            @elseif(($field['type'] ?? 'secret') === 'textarea')
-                                                                <div class="mb-3">
-                                                                    <label class="form-label"
-                                                                        for="gateway-{{ $gateway->id() }}-{{ $key }}">{{ __($field['label']) }}</label>
-                                                                    <textarea class="form-control" id="gateway-{{ $gateway->id() }}-{{ $key }}"
-                                                                        name="gateways[{{ $gateway->id() }}][{{ $key }}]" rows="4" maxlength="1024">{{ $registry->setting($gateway->id(), $key, $field['default'] ?? '') }}</textarea>
-                                                                </div>
-                                                            @else
-                                                                <div class="mb-3">
-                                                                    <label class="form-label"
-                                                                        for="gateway-{{ $gateway->id() }}-{{ $key }}">{{ __($field['label']) }}</label>
-                                                                    <input class="form-control"
-                                                                        id="gateway-{{ $gateway->id() }}-{{ $key }}"
-                                                                        type="{{ ($field['type'] ?? 'secret') === 'secret' ? 'password' : 'text' }}"
-                                                                        name="gateways[{{ $gateway->id() }}][{{ $key }}]"
-                                                                        autocomplete="{{ ($field['type'] ?? 'secret') === 'secret' ? 'new-password' : 'off' }}"
-                                                                        value="{{ ($field['type'] ?? 'secret') === 'secret' ? '' : $registry->setting($gateway->id(), $key, $field['default'] ?? '') }}">
-                                                                    @if (($field['type'] ?? 'secret') === 'secret')
-                                                                        <div class="form-text">
-                                                                            {{ $registry->setting($gateway->id(), $key, '') !== '' ? __('shop::commerce.payments.settings.keep_secret') : __('shop::commerce.payments.settings.new_secret') }}
-                                                                        </div>
-                                                                    @endif
-                                                                </div>
-                                                            @endif
-                                                        @endforeach
+                                                        @if ($webhookField)
+                                                            @include('shop::admin.catalog.webhook-setup', ['setup' => $webhookStates[$gateway->id()]])
+                                                        @else
+                                                            @foreach ($fields as $key => $field)
+                                                                @include('shop::admin.catalog.gateway-field', ['fieldForm' => 'shop-payment-settings'])
+                                                            @endforeach
+                                                        @endif
                                                         @if (in_array($gateway->id(), ['paysafecard', 'paymentwall'], true))
                                                             <p class="form-text mt-3">{{ __('shop::commerce.payments.providers.' . $gateway->id() . '_help') }}</p>
                                                             <p class="form-text">{{ __('shop::commerce.payments.providers.one_time_only') }}</p>
                                                         @endif
-                                                        @if ($gateway->id() !== 'paysafecard' && Route::has('plugins.shop.webhooks.' . $gateway->id() . '.handle'))
-                                                            <div class="mt-3">
-                                                                <label class="form-label"
-                                                                    for="webhook-{{ $gateway->id() }}">{{ __('shop::commerce.payments.settings.webhook') }}</label>
-                                                                <div class="input-group">
-                                                                    <input class="form-control" id="webhook-{{ $gateway->id() }}"
-                                                                        value="{{ route('plugins.shop.webhooks.' . $gateway->id() . '.handle') }}" readonly>
-                                                                    <button class="btn btn-outline-secondary" type="button"
-                                                                        data-copy="{{ route('plugins.shop.webhooks.' . $gateway->id() . '.handle') }}"
-                                                                        data-copied="{{ __('site.home.copied') }}">{{ __('common.actions.copy') }}</button>
-                                                                </div>
-                                                            </div>
+                                                        @if (!$webhookField && $gateway->id() !== 'paysafecard' && Route::has('plugins.shop.webhooks.' . $gateway->id() . '.handle'))
+                                                            @include('shop::admin.catalog.webhook-url')
                                                         @endif
                                                         <fieldset class="mt-4">
                                                             <legend class="h5">{{ __('shop::commerce.payments.policy.conditions') }}</legend>
@@ -513,7 +477,7 @@
                                                                                             <input class="form-control"
                                                                                                 id="gateway-{{ $gateway->id() }}-{{ $currency }}-{{ $limit }}"
                                                                                                 type="text" inputmode="decimal"
-                                                                                                maxlength="18"
+                                                                                                maxlength="18" form="shop-payment-settings"
                                                                                                 name="gateways[{{ $gateway->id() }}][policy][limits][{{ $currency }}][{{ $limit }}]"
                                                                                                 value="{{ old('gateways.' . $gateway->id() . '.policy.limits.' . $currency . '.' . $limit, $gatewayPolicy['limits'][$currency][$limit] ?? '') }}"
                                                                                                 placeholder="{{ __('shop::commerce.payments.policy.no_limit') }}">
@@ -528,13 +492,13 @@
                                                                     @if ($gatewayPolicy[$capability] ?? false)
                                                                         <input type="hidden"
                                                                             name="gateways[{{ $gateway->id() }}][policy][{{ $option }}]"
-                                                                            value="0">
+                                                                            value="0" form="shop-payment-settings">
                                                                         <div class="form-check mb-2">
                                                                             <input class="form-check-input"
                                                                                 id="gateway-policy-{{ $gateway->id() }}-{{ $option }}"
                                                                                 type="checkbox"
                                                                                 name="gateways[{{ $gateway->id() }}][policy][{{ $option }}]"
-                                                                                value="1" @checked(old('gateways.' . $gateway->id() . '.policy.' . $option, $gatewayPolicy[$option] ?? false))>
+                                                                                value="1" form="shop-payment-settings" @checked(old('gateways.' . $gateway->id() . '.policy.' . $option, $gatewayPolicy[$option] ?? false))>
                                                                             <label class="form-check-label"
                                                                                 for="gateway-policy-{{ $gateway->id() }}-{{ $option }}">{{ __('shop::commerce.payments.policy.' . $option) }}</label>
                                                                         </div>
@@ -551,14 +515,14 @@
                                             </div>
                                         @endforeach
                                     </div>
-                                    <div class="mt-3">
-                                        @include('partials.forms.sensitive-fields')
-                                    </div>
                                 </div>
-                                <div class="card-footer">
-                                    <button class="btn btn-primary" type="submit">{{ __('shop::messages.actions.save') }}</button>
-                                </div>
-                            </form>
+                                <form class="card-footer" id="shop-payment-settings" data-ajax="true" data-redirect-url="response"
+                                    method="post" action="{{ route('plugins.shop.admin.payments.settings.update') }}">
+                                    @csrf
+                                    <input type="hidden" name="catalogue_tab" value="payments">
+                                    @include('partials.forms.sensitive-fields')
+                                    <button class="btn btn-primary" type="submit">{{ __('shop::commerce.payments.webhook_setup.save_payment_settings') }}</button>
+                                </form>
                         </section>
                     @endif
                 @endif

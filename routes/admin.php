@@ -12,6 +12,7 @@ use KraftInk\Plugins\Shop\Http\Controllers\DeliveryController;
 use KraftInk\Plugins\Shop\Http\Controllers\ReceiptController;
 use KraftInk\Plugins\Shop\Http\Controllers\Admin\Pricing\PrivilegedController;
 use KraftInk\Plugins\Shop\Http\Controllers\Admin\StorefrontController;
+use KraftInk\Plugins\Shop\Services\Payments\WebhookSetup;
 
 Route::prefix('admin/plugins/shop')
     ->name('plugins.shop.admin.')
@@ -95,6 +96,14 @@ Route::prefix('admin/plugins/shop')
         Route::post('/settings', [AdminController::class, 'settings'])
             ->middleware(['permission:shop.finance.configure', 'throttle:sensitive'])
             ->name('payments.settings.update');
+        Route::post('/settings/{provider}/credentials', [AdminController::class, 'paymentCredentials'])
+            ->whereIn('provider', array_keys(WebhookSetup::FIELDS))
+            ->middleware(['permission:shop.finance.configure', 'throttle:shop.payment-setup'])
+            ->name('payments.credentials.update');
+        Route::post('/settings/{provider}/webhook', [AdminController::class, 'paymentWebhook'])
+            ->whereIn('provider', array_keys(WebhookSetup::FIELDS))
+            ->middleware(['permission:shop.finance.configure', 'throttle:shop.payment-setup'])
+            ->name('payments.webhook.update');
         Route::get('/orders/{id}/pricing', [OrderController::class, 'show'])
             ->whereNumber('id')
             ->name('orders.pricing.show');

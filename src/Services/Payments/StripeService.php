@@ -13,6 +13,7 @@ use KraftInk\Plugins\Shop\Data\Payments\RefundResult;
 use KraftInk\Plugins\Shop\Models\Orders\OrderItem;
 use KraftInk\Plugins\Shop\Models\Orders\Subscription;
 use KraftInk\Plugins\Shop\Models\Orders\SubscriptionPayment;
+use SensitiveParameter;
 use Stripe\Exception\SignatureVerificationException;
 use Stripe\HttpClient\CurlClient;
 use Stripe\StripeClient;
@@ -24,6 +25,32 @@ class StripeService
 {
     public const string API_VERSION = '2026-09-30.endive';
 
+    private const array WEBHOOK_EVENTS = [
+        'checkout.session.completed',
+        'checkout.session.async_payment_succeeded',
+        'checkout.session.expired',
+        'customer.updated',
+        'customer.deleted',
+        'setup_intent.succeeded',
+        'invoice.paid',
+        'invoice.payment_failed',
+        'customer.subscription.created',
+        'customer.subscription.updated',
+        'customer.subscription.pending_update_applied',
+        'customer.subscription.pending_update_expired',
+        'customer.subscription.deleted',
+        'customer.subscription.paused',
+        'customer.subscription.resumed',
+        'refund.created',
+        'refund.updated',
+        'refund.failed',
+        'charge.dispute.created',
+        'charge.dispute.updated',
+        'charge.dispute.closed',
+        'charge.dispute.funds_withdrawn',
+        'charge.dispute.funds_reinstated',
+    ];
+
     public function setting(string $key, string $default = ''): string
     {
         return app(GatewayRegistry::class)->setting('stripe', $key, $default);
@@ -32,6 +59,93 @@ class StripeService
     public function configured(): bool
     {
         return (bool) $this->setting('secret') && (bool) $this->setting('webhook_secret');
+    }
+
+    public function validateWebhookCredentials(#[SensitiveParameter] string $apiKey): void
+    {
+        $this->client($apiKey)->checkout->sessions->all(['limit' => 1, 'created' => 1]);
+    }
+
+    public function configureWebhook(
+        string $url,
+        #[SensitiveParameter] string $apiKey,
+        ?string $knownId = null,
+        #[SensitiveParameter] ?string $knownSecret = null,
+    ): array {
+        $endpoints = $this->client($apiKey, 1)->webhookEndpoints;
+        $hasExistingEndpoint = false;
+        for ($page = $endpoints->all(['limit' => 100]); ; $page = $page->nextPage()) {
+            $entries = $page['data'] ?? null;
+            $hasMore = $page['has_more'] ?? null;
+            if (!is_array($entries) || !array_is_list($entries) || !is_bool($hasMore) || ($hasMore && $entries === [])) {
+                throw new HttpException(502);
+            }
+            foreach ($entries as $existing) {
+                $existingId = $existing['id'] ?? null;
+                $existingUrl = $existing['url'] ?? null;
+                if (!$this->validWebhookId($existingId) || !is_string($existingUrl) || $existingUrl === '') {
+                    throw new HttpException(502);
+                }
+                if ($existingUrl !== $url) {
+                    continue;
+                }
+                $hasExistingEndpoint = true;
+                if (
+                    $existingId === $knownId &&
+                    $this->validWebhookSecret($knownSecret) &&
+                    $this->enabledWebhook($existing['status'] ?? null, $existing['enabled_events'] ?? null)
+                ) {
+                    return ['id' => $knownId, 'secret' => $knownSecret];
+                }
+            }
+            if (!$hasMore) {
+                break;
+            }
+        }
+        if ($hasExistingEndpoint) {
+            throw new HttpException(409);
+        }
+
+        $endpoint = $endpoints->create(
+            [
+                'url' => $url,
+                'enabled_events' => self::WEBHOOK_EVENTS,
+                'api_version' => self::API_VERSION,
+                'description' => 'KraftInk Shop',
+            ],
+            ['idempotency_key' => 'kraftink-shop-webhook-'.bin2hex(random_bytes(16))],
+        );
+        $id = $endpoint['id'] ?? null;
+        $secret = $endpoint['secret'] ?? null;
+        if (
+            !$this->validWebhookId($id) ||
+            !$this->validWebhookSecret($secret) ||
+            ($endpoint['url'] ?? null) !== $url ||
+            !$this->enabledWebhook($endpoint['status'] ?? null, $endpoint['enabled_events'] ?? null)
+        ) {
+            throw new HttpException(502);
+        }
+
+        return ['id' => $id, 'secret' => $secret];
+    }
+
+    private function enabledWebhook(mixed $status, mixed $events): bool
+    {
+        return $status === 'enabled' &&
+            is_array($events) &&
+            array_is_list($events) &&
+            array_all($events, fn ($event) => is_string($event)) &&
+            array_diff(self::WEBHOOK_EVENTS, $events) === [];
+    }
+
+    private function validWebhookId(mixed $id): bool
+    {
+        return is_string($id) && str_starts_with($id, 'we_') && $id !== 'we_';
+    }
+
+    private function validWebhookSecret(#[SensitiveParameter] mixed $secret): bool
+    {
+        return is_string($secret) && str_starts_with($secret, 'whsec_') && $secret !== 'whsec_';
     }
 
     public function createCheckout(object $order, string $email): CheckoutSession
@@ -658,14 +772,14 @@ class StripeService
         );
     }
 
-    private function client(): StripeClient
+    private function client(#[SensitiveParameter] ?string $apiKey = null, int $networkRetries = 0): StripeClient
     {
         CurlClient::instance()->setTimeout(20);
 
         return new StripeClient([
-            'api_key' => $this->setting('secret'),
+            'api_key' => $apiKey ?? $this->setting('secret'),
             'stripe_version' => self::API_VERSION,
-            'max_network_retries' => 0,
+            'max_network_retries' => $networkRetries,
         ]);
     }
 }

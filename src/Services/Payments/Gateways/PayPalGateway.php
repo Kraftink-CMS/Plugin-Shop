@@ -43,9 +43,13 @@ class PayPalGateway implements CancelsSubscriptions, GuestCheckout, PaymentGatew
             'secret' => ['label' => 'shop::commerce.payments.settings.paypal_secret', 'type' => 'secret'],
             'webhook_id' => ['label' => 'shop::commerce.payments.settings.paypal_webhook_id', 'type' => 'secret'],
             'sandbox' => [
-                'label' => 'shop::commerce.payments.settings.paypal_sandbox',
+                'label' => 'shop::commerce.payments.settings.paypal_environment',
                 'type' => 'boolean',
                 'default' => '1',
+                'options' => [
+                    '1' => 'shop::commerce.payments.webhook_setup.sandbox',
+                    '0' => 'shop::commerce.payments.settings.production',
+                ],
             ],
         ];
     }

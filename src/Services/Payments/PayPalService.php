@@ -15,9 +15,31 @@ use KraftInk\Plugins\Shop\Models\Orders\OrderItem;
 use KraftInk\Plugins\Shop\Models\Orders\SubscriptionPayment;
 use KraftInk\Plugins\Shop\Services\Orders\SubscriptionService;
 use Illuminate\Http\Client\PendingRequest;
+use SensitiveParameter;
 
 class PayPalService
 {
+    private const array WEBHOOK_EVENTS = [
+        'PAYMENT.CAPTURE.COMPLETED',
+        'PAYMENT.SALE.COMPLETED',
+        'PAYMENT.CAPTURE.REFUNDED',
+        'PAYMENT.REFUND.PENDING',
+        'PAYMENT.REFUND.FAILED',
+        'PAYMENT.SALE.REFUNDED',
+        'PAYMENT.CAPTURE.REVERSED',
+        'PAYMENT.SALE.REVERSED',
+        'BILLING.SUBSCRIPTION.CREATED',
+        'BILLING.SUBSCRIPTION.ACTIVATED',
+        'BILLING.SUBSCRIPTION.UPDATED',
+        'BILLING.SUBSCRIPTION.EXPIRED',
+        'BILLING.SUBSCRIPTION.CANCELLED',
+        'BILLING.SUBSCRIPTION.SUSPENDED',
+        'BILLING.SUBSCRIPTION.PAYMENT.FAILED',
+        'CUSTOMER.DISPUTE.CREATED',
+        'CUSTOMER.DISPUTE.UPDATED',
+        'CUSTOMER.DISPUTE.RESOLVED',
+    ];
+
     public function setting(string $key, string $default = ''): string
     {
         return app(GatewayRegistry::class)->setting('paypal', $key, $default);
@@ -28,6 +50,11 @@ class PayPalService
         return (bool) $this->setting('client_id') &&
             (bool) $this->setting('secret') &&
             (bool) $this->setting('webhook_id');
+    }
+
+    public function validateWebhookCredentials(string $clientId, #[SensitiveParameter] string $secret, bool $sandbox): void
+    {
+        $this->authenticatedClient($this->base($sandbox), $clientId, $secret);
     }
 
     public function createCheckout(object $order, string $email): CheckoutSession
@@ -83,6 +110,94 @@ class PayPalService
         }
 
         return new CheckoutSession($reference, $url);
+    }
+
+    public function configureWebhook(string $url, string $clientId, #[SensitiveParameter] string $secret, bool $sandbox): string
+    {
+        $base = $this->base($sandbox);
+        $client = $this->authenticatedClient($base, $clientId, $secret);
+        $endpoint = $base.'/v1/notifications/webhooks';
+        $listed = $client->get($endpoint)->throw();
+        $webhooks = $listed->json('webhooks');
+        if (!$listed->ok() || !is_array($webhooks) || !array_is_list($webhooks)) {
+            throw new HttpException(502);
+        }
+
+        $existing = null;
+        foreach ($webhooks as $webhook) {
+            $webhookUrl = $webhook['url'] ?? null;
+            if (!is_string($webhookUrl) || $webhookUrl === '') {
+                throw new HttpException(502);
+            }
+            if ($webhookUrl === $url) {
+                $existing = $webhook;
+                break;
+            }
+        }
+        if ($existing === null) {
+            $created = $client->post($endpoint, [
+                'url' => $url,
+                'event_types' => $this->webhookEventTypes(self::WEBHOOK_EVENTS),
+            ])->throw();
+            if (!$created->created()) {
+                throw new HttpException(502);
+            }
+
+            return $this->confirmedWebhookId($created->json(), $url, self::WEBHOOK_EVENTS);
+        }
+
+        $id = $existing['id'] ?? null;
+        if (!is_string($id) || $id === '') {
+            throw new HttpException(502);
+        }
+        $subscribed = $this->webhookEventNames($existing['event_types'] ?? null);
+        if (!in_array('*', $subscribed, true) && ($missing = array_diff(self::WEBHOOK_EVENTS, $subscribed))) {
+            $events = [...$subscribed, ...$missing];
+            $updated = $client->patch($endpoint.'/'.rawurlencode($id), [[
+                'op' => 'replace',
+                'path' => '/event_types',
+                'value' => $this->webhookEventTypes($events),
+            ]])->throw();
+            if (!$updated->ok()) {
+                throw new HttpException(502);
+            }
+
+            return $this->confirmedWebhookId($updated->json(), $url, $events, $id);
+        }
+
+        return $id;
+    }
+
+    private function confirmedWebhookId(mixed $webhook, string $url, array $events, ?string $expectedId = null): string
+    {
+        $id = $webhook['id'] ?? null;
+        if (!is_string($id) || $id === '' || ($expectedId !== null && $id !== $expectedId) || ($webhook['url'] ?? null) !== $url) {
+            throw new HttpException(502);
+        }
+        $subscribed = $this->webhookEventNames($webhook['event_types'] ?? null);
+        if (!in_array('*', $subscribed, true) && array_diff($events, $subscribed) !== []) {
+            throw new HttpException(502);
+        }
+
+        return $id;
+    }
+
+    private function webhookEventNames(mixed $eventTypes): array
+    {
+        if (!is_array($eventTypes) || !array_is_list($eventTypes)) {
+            throw new HttpException(502);
+        }
+        $names = array_column($eventTypes, 'name');
+        if (count($names) !== count($eventTypes) || !array_all($names, fn ($name) => is_string($name))) {
+            throw new HttpException(502);
+        }
+
+        return $names;
+    }
+
+    private function webhookEventTypes(array $names): array
+    {
+        return array_map(fn (string $name) => ['name' => $name], $names);
     }
 
     public function verifyWebhook(Request $request): array
@@ -433,19 +548,31 @@ class PayPalService
         return intdiv($minor, 100).'.'.str_pad((string) ($minor % 100), 2, '0', STR_PAD_LEFT);
     }
 
-    private function base(): string
+    private function base(?bool $sandbox = null): string
     {
-        return $this->setting('sandbox', '1') === '1' ? 'https://api-m.sandbox.paypal.com' : 'https://api-m.paypal.com';
+        $sandbox ??= $this->setting('sandbox', '1') === '1';
+
+        return $sandbox ? 'https://api-m.sandbox.paypal.com' : 'https://api-m.paypal.com';
     }
 
     private function client(): PendingRequest
     {
+        return $this->authenticatedClient($this->base(), $this->setting('client_id'), $this->setting('secret'));
+    }
+
+    private function authenticatedClient(string $base, string $clientId, #[SensitiveParameter] string $secret): PendingRequest
+    {
         $response = Http::timeout(20)
             ->asForm()
-            ->withBasicAuth($this->setting('client_id') ?? '', $this->setting('secret') ?? '')
-            ->post($this->base().'/v1/oauth2/token', ['grant_type' => 'client_credentials'])
+            ->withBasicAuth($clientId, $secret)
+            ->post($base.'/v1/oauth2/token', ['grant_type' => 'client_credentials'])
             ->throw();
 
-        return Http::timeout(20)->withToken($response->json('access_token'))->acceptJson();
+        $token = $response->json('access_token');
+        if (!is_string($token) || $token === '') {
+            throw new HttpException(502);
+        }
+
+        return Http::timeout(20)->withToken($token)->acceptJson();
     }
 }

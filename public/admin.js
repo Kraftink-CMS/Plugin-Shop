@@ -21,6 +21,28 @@ const select = (root, selector, key) => {
 };
 
 const initializeShopAdmin = (root = document) => {
+    select(root, '[data-shop-webhook-setup]', 'webhook').forEach((setup) => {
+        const actions = setup.querySelector('[data-shop-webhook-actions]');
+        if (!actions) {
+            return;
+        }
+        const credentials = setup.querySelector('[data-shop-payment-credentials]');
+        const unsaved = setup.querySelector('[data-shop-unsaved-credentials]');
+        const inputs = credentials.querySelectorAll('input[type="password"], select');
+        const update = () => {
+            const changed = [...inputs].some((field) =>
+                field instanceof HTMLSelectElement
+                    ? !field.selectedOptions[0]?.defaultSelected
+                    : field.value !== field.defaultValue,
+            );
+            actions.hidden = changed;
+            unsaved.hidden = !changed;
+        };
+        credentials.addEventListener('input', update);
+        credentials.addEventListener('change', update);
+        update();
+    });
+
     select(root, '[data-shop-catalogue]', 'catalogue').forEach((navigation) => {
         const tabs = [...navigation.querySelectorAll('[data-catalogue-section]')];
         tabs.forEach((tab) => {

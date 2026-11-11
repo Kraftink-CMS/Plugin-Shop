@@ -3,6 +3,7 @@
 namespace KraftInk\Plugins\Shop\Http\Controllers\Admin;
 
 use Symfony\Component\HttpKernel\Exception\HttpException;
+use Closure;
 use App\Kraft\System\TableQuery;
 use App\Kraft\Audit;
 use App\Kraft\Currencies\CurrencyRegistry;
@@ -20,6 +21,7 @@ use App\Models\Accounts\Role;
 use App\Models\Media\MediaAsset;
 use App\Models\Servers\Server;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -44,6 +46,7 @@ use KraftInk\Plugins\Shop\Services\Finance\IssuedCreditScope;
 use KraftInk\Plugins\Shop\Services\Orders\OrderService;
 use KraftInk\Plugins\Shop\Services\Payments\GatewayRegistry;
 use KraftInk\Plugins\Shop\Services\Payments\PaymentPolicy;
+use KraftInk\Plugins\Shop\Services\Payments\WebhookSetup;
 use KraftInk\Plugins\Shop\Services\Roles\RolePolicy;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\View\View;
@@ -53,7 +56,7 @@ use Throwable;
 
 class AdminController
 {
-    public function index(Request $request, GatewayRegistry $registry): RedirectResponse|View
+    public function index(Request $request, GatewayRegistry $registry, WebhookSetup $webhooks): RedirectResponse|View
     {
         $data = $request->validate([
             'tab' => ['nullable', Rule::in(['products', 'orders', 'categories', 'coupons', 'giftcards', 'payments'])],
@@ -168,6 +171,10 @@ class AdminController
             'giftcards' => $paginate(GiftCard::query()->orderByDesc('id'), 'giftcards'),
             'orders' => $paginate(Order::query()->orderByDesc('id'), 'orders'),
             'gateways' => $request->user()->hasPermission('shop.finance.configure') ? $registry->all() : [],
+            'webhookFields' => WebhookSetup::FIELDS,
+            'webhookStates' => $request->user()->hasPermission('shop.finance.configure')
+                ? collect(WebhookSetup::FIELDS)->map(fn ($field, $provider) => $webhooks->state($provider))->all()
+                : [],
             'registry' => $registry,
             'paymentPolicies' => $request->user()->hasPermission('shop.finance.configure')
                 ? app(PaymentPolicy::class)->configuration()
@@ -775,6 +782,9 @@ class AdminController
         $rules = $policy->rules();
         foreach ($registry->all() as $id => $gateway) {
             $rules['gateways.'.$id.'.enabled'] = ['required', 'boolean'];
+            if (isset(WebhookSetup::FIELDS[$id])) {
+                continue;
+            }
             foreach ($gateway->configurationFields() as $key => $field) {
                 $rules['gateways.'.$id.'.'.$key] =
                     $field['rules'] ??
@@ -785,21 +795,82 @@ class AdminController
         }
         $data = $request->validate($rules);
         $normalizedPolicies = $policy->normalize($data);
-        DB::transaction(function () use ($data, $registry, $policy, $normalizedPolicies) {
-            foreach ($registry->all() as $id => $gateway) {
-                $registry->set($id, 'enabled', (string) (int) $data['gateways'][$id]['enabled']);
-                foreach ($gateway->configurationFields() as $key => $field) {
-                    $value = $data['gateways'][$id][$key] ?? null;
-                    if (($field['type'] ?? 'secret') !== 'secret' || ($value !== null && $value !== '')) {
-                        $registry->set($id, $key, (string) $value);
+        $this->withPaymentSettingsLock('payments', function () use ($data, $registry, $policy, $normalizedPolicies) {
+            DB::transaction(function () use ($data, $registry, $policy, $normalizedPolicies) {
+                foreach ($registry->all() as $id => $gateway) {
+                    $gatewaySettings = $data['gateways'][$id];
+                    $registry->set($id, 'enabled', (string) (int) $gatewaySettings['enabled']);
+                    if (isset(WebhookSetup::FIELDS[$id])) {
+                        continue;
+                    }
+                    foreach ($gateway->configurationFields() as $key => $field) {
+                        $value = $gatewaySettings[$key] ?? null;
+                        if (($field['type'] ?? null) === 'boolean') {
+                            $value = (string) (int) $value;
+                        }
+                        if (($field['type'] ?? 'secret') !== 'secret' || ($value !== null && $value !== '')) {
+                            $registry->set($id, $key, (string) $value);
+                        }
                     }
                 }
-            }
-            $policy->save($normalizedPolicies);
+                $policy->save($normalizedPolicies);
+            });
         });
         Audit::record('shop.payment.configured', ['gateways' => array_keys($data['gateways'])], $request->user());
 
         return back()->with('status', __('shop::messages.feedback.saved'));
+    }
+
+    public function paymentCredentials(Request $request, WebhookSetup $webhooks, string $provider): RedirectResponse
+    {
+        app(SensitiveAction::class)->confirm($request);
+        $prefix = 'gateways.'.$provider.'.';
+        $rules = [$prefix.'secret' => ['nullable', 'string', 'max:1024']];
+        if ($provider === 'paypal') {
+            $rules[$prefix.'client_id'] = ['nullable', 'string', 'max:1024'];
+            $rules[$prefix.'sandbox'] = ['required', 'boolean'];
+        }
+        $data = $request->validate($rules);
+        $this->withPaymentSettingsLock($prefix.'secret', fn () => $webhooks->saveCredentials($provider, $data['gateways'][$provider] ?? []));
+        Audit::record('shop.payment.credentials_saved', ['gateway' => $provider], $request->user());
+
+        return $this->paymentSetupResponse($provider, 'credentials_saved');
+    }
+
+    public function paymentWebhook(Request $request, WebhookSetup $webhooks, string $provider): RedirectResponse
+    {
+        app(SensitiveAction::class)->confirm($request);
+        $prefix = 'gateways.'.$provider.'.';
+        $field = WebhookSetup::FIELDS[$provider];
+        $data = $request->validate([
+            'mode' => ['required', Rule::in(['automatic', 'manual'])],
+            $prefix.$field => ['exclude_unless:mode,manual', 'nullable', 'string', 'max:1024'],
+        ]);
+        $value = $data['gateways'][$provider][$field] ?? null;
+        $this->withPaymentSettingsLock($prefix.'webhook', fn () => $webhooks->saveWebhook($provider, $data['mode'], $value));
+        Audit::record('shop.payment.webhook_configured', ['gateway' => $provider, 'mode' => $data['mode']], $request->user());
+
+        return $this->paymentSetupResponse($provider, 'saved');
+    }
+
+    private function paymentSetupResponse(string $provider, string $message): RedirectResponse
+    {
+        return redirect()->to(route('plugins.shop.admin.catalog.index', ['tab' => 'payments']).'#catalogue-payments')
+            ->with('shop_payment_gateway', $provider)
+            ->with('status', __('shop::commerce.payments.webhook_setup.'.$message));
+    }
+
+    private function withPaymentSettingsLock(string $errorKey, Closure $save): void
+    {
+        $saved = Cache::lock('shop.payment.settings', 180)->get(function () use ($save) {
+            app(Settings::class)->refresh();
+            $save();
+
+            return true;
+        });
+        if (!$saved) {
+            throw ValidationException::withMessages([$errorKey => __('shop::commerce.payments.webhook_setup.busy')]);
+        }
     }
 
     private function money(Request $request, array $fields): void

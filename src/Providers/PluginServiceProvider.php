@@ -18,7 +18,10 @@ use App\Kraft\Widgets\WidgetRegistry;
 use App\Models\Accounts\User;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\View\View;
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 use KraftInk\Plugins\Shop\Console\Commands\ProcessTasks;
 use KraftInk\Plugins\Shop\Listeners\DataRetention;
@@ -64,6 +67,9 @@ class PluginServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        RateLimiter::for('shop.payment-setup', fn (Request $request) => Limit::perMinute(10)->by(
+            $request->route()->getName().':'.$request->route('provider').':'.($request->user()?->id ?? $request->ip()),
+        ));
         app(MediaSelection::class)->register('shop-image', 'shop.manage', 'image');
         $this->registerEvents(app(PluginEvents::class));
         $this->registerNotifications(app(NotificationRegistry::class));
